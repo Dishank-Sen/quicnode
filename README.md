@@ -23,7 +23,7 @@ It focuses purely on **transport + routing**, so it can be reused across multipl
 ## Installation
 
 ```bash
-go get github.com/Dishank-Sen/quicnode
+go get github.com/Dishank-Sen/quicnode@latest
 ```
 
 ## How To Use
