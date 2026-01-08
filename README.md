@@ -30,7 +30,10 @@ go get github.com/Dishank-Sen/quicnode@latest
 
 1. Create TLS and QUIC Config
 ```bash
+cert, _ := tls.LoadX509KeyPair(certFilePath, keyFilePath)
+
 tlsConfig := &tls.Config{
+    InsecureSkipVerify: true,   // for development only
     Certificates: []tls.Certificate{cert},
     NextProtos:   []string{"quicnode"},
 }

@@ -26,11 +26,12 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error){
 		cancel()
 		return nil, err
 	}
-
+	r := router.NewRouter()
 	n := &Node{
 		cfg: cfg,
 		ctx: ctx,
 		cancel: cancel,
+		router: r,
 	}
 
 	return n, nil
@@ -94,7 +95,7 @@ func (n *Node) Stop() error{
 
 func (n *Node) acceptLoop(){
 	for{
-		fmt.Println("waiting for connection...")
+		// fmt.Println("waiting for connection...")
 		conn, err := n.listener.Accept(n.ctx)
 		if err != nil{
 			if n.handleConnError(err){
@@ -103,7 +104,7 @@ func (n *Node) acceptLoop(){
 			continue
 		}
 
-		fmt.Println("connection received")
+		// fmt.Println("connection received")
 		go n.handleSession(conn)
 	}
 }

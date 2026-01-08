@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"crypto/tls"
-
 	"github.com/Dishank-Sen/quicnode/constants"
 	"github.com/Dishank-Sen/quicnode/internal/transport/request"
 	"github.com/Dishank-Sen/quicnode/internal/transport/response"
@@ -22,6 +21,7 @@ func Dial(ctx context.Context, tlsCfg *tls.Config, quicCfg *quic.Config, req *ty
 		quicCfg,
 	)
 	if err != nil{
+		// fmt.Println("conn error")
 		dialCancel()
 		return errorRes(), err
 	}
