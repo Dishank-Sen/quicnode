@@ -3,6 +3,8 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"net"
+
 	"github.com/Dishank-Sen/quicnode/constants"
 	"github.com/Dishank-Sen/quicnode/internal/transport/request"
 	"github.com/Dishank-Sen/quicnode/internal/transport/response"
@@ -14,9 +16,18 @@ func Dial(ctx context.Context, tlsCfg *tls.Config, quicCfg *quic.Config, req *ty
 	// IMPORTANT: use context with timeout for dial
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), constants.QuicDialTimeout)
 	defer dialCancel()
-	conn, err := quic.DialAddr(
+
+	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{
+		IP:   net.IPv4zero,
+		Port: 50000,
+	})
+	if err != nil {
+		return errorRes(), err
+	}
+	conn, err := quic.Dial(
 		dialCtx,
-		req.DestinationAddr.String(),
+		udpConn,
+		req.DestinationAddr,
 		tlsCfg,
 		quicCfg,
 	)

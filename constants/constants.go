@@ -3,6 +3,6 @@ package constants
 import "time"
 
 const (
-	QuicDialTimeout = 5*time.Second
-	QuicStreamTimeout = 5*time.Second
+	QuicDialTimeout = 30*time.Second
+	QuicStreamTimeout = 30*time.Second
 )
