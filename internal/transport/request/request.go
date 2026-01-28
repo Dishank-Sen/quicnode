@@ -20,7 +20,7 @@ func WriteRequest(w io.Writer, req *types.Request) error{
 		}
 	}
 
-	if _, err := fmt.Fprintf(w, "Destination-Address: %d\r\n", req.DestinationAddr); err != nil {
+	if _, err := fmt.Fprintf(w, "Destination-Address: %s\r\n", req.DestinationAddr.String()); err != nil {
 		return err
 	}
 

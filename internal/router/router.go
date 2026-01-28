@@ -33,6 +33,5 @@ func (r *Router) Dispatch(req *types.Request) *types.Response {
 			Body:       []byte("route not found"),
 		}
 	}
-
 	return h(req)
 }

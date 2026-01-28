@@ -19,7 +19,7 @@ func ParseRequest(stream io.Reader) (*types.Request, error) {
 
 	lines := strings.Split(string(rawHeaders), "\r\n")
 	parts := strings.Split(lines[0], " ")
-	if len(parts) < 1 {
+	if len(parts) < 2 {
 		return nil, errors.New("invalid request line")
 	}
 

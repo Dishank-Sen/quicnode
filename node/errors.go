@@ -2,10 +2,13 @@ package node
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/quic-go/quic-go"
 )
 
 func (n *Node) handleConnError(err error) (shouldExit bool) {
@@ -48,26 +51,29 @@ func (n *Node) handleStreamError(err error) (shouldExit bool) {
 	}
 
 	// 1. Context cancelled → normal shutdown
-	if errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded){
 		return true
 	}
 
-	// 2. Connection closed by peer or locally → session ends
-	msg := err.Error()
-	if strings.Contains(msg, "closed") ||
-		strings.Contains(msg, "EOF") ||
-		strings.Contains(msg, "connection closed") {
+	// when issue related to handshake
+	var unknownAuth x509.UnknownAuthorityError
+	if errors.As(err, &unknownAuth) {
 		return true
 	}
 
-	// 3. Temporary / retryable stream error
-	type temporary interface {
-		Temporary() bool
+	var certInvalid x509.CertificateInvalidError
+	if errors.As(err, &certInvalid) {
+		return true
 	}
-	if t, ok := err.(temporary); ok && t.Temporary() {
-		time.Sleep(50 * time.Millisecond) // avoid busy loop
-		return false
+
+	var hostErr x509.HostnameError
+	if errors.As(err, &hostErr) {
+		return true
 	}
-	
-	return true
+
+	var appErr *quic.ApplicationError
+	if errors.As(err, &appErr){
+		return true
+	}
+	return false
 }

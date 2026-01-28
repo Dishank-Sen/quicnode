@@ -3,8 +3,10 @@ package node
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"strconv"
+	"sync"
 
 	"github.com/Dishank-Sen/quicnode/internal/client"
 	"github.com/Dishank-Sen/quicnode/internal/router"
@@ -17,10 +19,19 @@ type Node struct{
 	ctx context.Context
 	cancel context.CancelFunc
 	listener *quic.Listener
+	transport *quic.Transport
 	router *router.Router
+	udpConn *net.UDPConn
+	once sync.Once
+	connsMu sync.Mutex
+    conns   map[*quic.Conn]struct{}
+	client *client.Client
 }
 
 func NewNode(ctx context.Context, cfg Config) (*Node, error){
+	if ctx == nil{
+		return nil, fmt.Errorf("context is nil")
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	if err := checkConfig(cfg); err != nil{
 		cancel()
@@ -32,7 +43,13 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error){
 		ctx: ctx,
 		cancel: cancel,
 		router: r,
+		conns: make(map[*quic.Conn]struct{}),
+		client: client.NewClient(),
 	}
+	go func(ctx context.Context) {
+		<- ctx.Done()
+		n.once.Do(n.shutdown)
+	}(ctx)
 
 	return n, nil
 }
@@ -70,12 +87,28 @@ func validateListenAddr(addr string) error {
 
 func (n *Node) Start() error{
 	addr := n.cfg.ListenAddr
+	host, portstr, err := net.SplitHostPort(addr)
+	port, err := strconv.Atoi(portstr)
+	if err != nil{
+		return err
+	}
 	tlsCfg := n.cfg.TlsConfig
 	quicCfg := n.cfg.QuicConfig
 
-	listener, err := quic.ListenAddr(addr, tlsCfg, quicCfg)
+	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{
+		IP: net.ParseIP(host),
+		Port: port,
+	})
+	if err != nil{
+		return err
+	}
+	n.udpConn = udpConn
+
+	n.transport = &quic.Transport{Conn: udpConn}
+
+	listener, err := n.transport.Listen(tlsCfg, quicCfg)
 	if err != nil {
-		n.cancel()
+		n.once.Do(n.shutdown)
 		return err
 	}
 
@@ -86,25 +119,41 @@ func (n *Node) Start() error{
 }
 
 func (n *Node) Stop() error{
-	n.cancel()
-	if n.listener != nil{
-		return n.listener.Close()
-	}
+	n.once.Do(n.shutdown)
 	return nil
 }
 
 func (n *Node) acceptLoop(){
 	for{
-		// fmt.Println("waiting for connection...")
+		log.Println("waiting for connection...")
 		conn, err := n.listener.Accept(n.ctx)
 		if err != nil{
+			log.Println(err)
 			if n.handleConnError(err){
+				log.Printf("error in listening: %v", err)
+				n.once.Do(n.shutdown)
 				return
 			}
 			continue
 		}
 
-		// fmt.Println("connection received")
+		log.Println("waiting for handshake")
+		select {
+		case <-conn.HandshakeComplete():
+			// ok
+		case <-conn.Context().Done():
+			// handshake failed / connection died early
+			continue
+		case <-n.ctx.Done():
+			return
+		}
+
+		log.Println("handshake complete")
+
+		n.connsMu.Lock()
+		n.conns[conn] = struct{}{}
+		n.connsMu.Unlock()
+
 		go n.handleSession(conn)
 	}
 }
@@ -130,7 +179,7 @@ func (n *Node) Dial(addr string, route string, headers map[string]string, body [
 		Body: body,
 	}
 
-	return client.Dial(n.ctx, n.cfg.TlsConfig, n.cfg.QuicConfig, req)
+	return n.client.Dial(n.ctx, n.transport, n.cfg.TlsConfig, n.cfg.QuicConfig, req)
 }
 
 func (n *Node) errorRes() *types.Response{
@@ -139,4 +188,27 @@ func (n *Node) errorRes() *types.Response{
 		Message:    "Error",
 		Body:       []byte("Internal Server Error"),
 	}
+}
+
+func (n *Node) shutdown(){
+	log.Println("node shutting down")
+	// important: as listener error still keeps the udp socket open 
+	// and it may cause socket leak or port already in use issue later on.
+	n.cancel()
+
+	if n.listener != nil {
+        _ = n.listener.Close()
+    }
+
+	n.connsMu.Lock()
+    for c := range n.conns {
+        _ = c.CloseWithError(0, "node shutdown (server)")
+    }
+    n.connsMu.Unlock()
+
+	if n.udpConn != nil {
+        _ = n.udpConn.Close()
+    }
+
+	n.client.Shutdown()
 }

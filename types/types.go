@@ -1,6 +1,10 @@
 package types
 
-import "net"
+import (
+	"net"
+
+	"github.com/quic-go/quic-go"
+)
 
 type Request struct{
 	Route   string
@@ -9,6 +13,7 @@ type Request struct{
 	DestinationAddr net.Addr
 	Body    []byte
 	Protocol string
+	Conn *quic.Conn
 }
 
 type Response struct {
