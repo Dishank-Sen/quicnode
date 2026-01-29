@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"log"
 	"net"
 	"strconv"
@@ -84,6 +85,33 @@ func (c *Client) Dial(ctx context.Context, tr *quic.Transport, tlsCfg *tls.Confi
 
 	return resp, nil
 
+}
+
+func (c *Client) DialConn(ctx context.Context, conn *quic.Conn, req *types.Request) (*types.Response, error){
+	if conn == nil{
+		return c.errorRes(), fmt.Errorf("connection object is nil")
+	}
+	streamCtx, streamCancel := context.WithTimeout(ctx, constants.QuicStreamTimeout)
+	defer streamCancel()
+
+	stream, err := conn.OpenStreamSync(streamCtx)
+	if err != nil {
+		return c.errorRes(), err
+	}
+	defer stream.Close()
+
+	if err := request.WriteRequest(stream, req); err != nil {
+		log.Println("write failed:", err)
+		return c.errorRes(), err
+	}
+
+	resp, err := response.ReadResponse(stream)
+	if err != nil {
+		log.Println("read failed:", err)
+		return c.errorRes(), err
+	}
+
+	return resp, nil
 }
 
 func (c *Client) errorRes() *types.Response{

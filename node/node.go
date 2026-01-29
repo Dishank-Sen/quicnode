@@ -182,6 +182,16 @@ func (n *Node) Dial(addr string, route string, headers map[string]string, body [
 	return n.client.Dial(n.ctx, n.transport, n.cfg.TlsConfig, n.cfg.QuicConfig, req)
 }
 
+func (n *Node) DialConn(conn *quic.Conn, route string, headers map[string]string, body []byte) (*types.Response, error){
+	req := &types.Request{
+		Route: route,
+		Headers: headers,
+		Body: body,
+	}
+
+	return n.client.DialConn(n.ctx, conn, req)
+}
+
 func (n *Node) errorRes() *types.Response{
 	return &types.Response{
 		StatusCode: 500,
