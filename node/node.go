@@ -182,9 +182,15 @@ func (n *Node) Dial(addr string, route string, headers map[string]string, body [
 	return n.client.Dial(n.ctx, n.transport, n.cfg.TlsConfig, n.cfg.QuicConfig, req)
 }
 
-func (n *Node) DialConn(conn *quic.Conn, route string, headers map[string]string, body []byte) (*types.Response, error){
+func (n *Node) DialConn(addr string, conn *quic.Conn, route string, headers map[string]string, body []byte) (*types.Response, error){
+	desAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil{
+		return n.errorRes(), err
+	}
+
 	req := &types.Request{
 		Route: route,
+		DestinationAddr: desAddr,
 		Headers: headers,
 		Body: body,
 	}
