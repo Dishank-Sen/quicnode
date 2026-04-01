@@ -1,10 +1,12 @@
 package router
 
 import (
+	"context"
+
 	"github.com/Dishank-Sen/quicnode/types"
 )
 
-type HandlerFunc func(req *types.Request) *types.Response
+type HandlerFunc func(ctx context.Context, req *types.Request) *types.Response
 
 type routeKey struct {
 	route string
@@ -24,7 +26,7 @@ func (r *Router) AddRoute(route string, h HandlerFunc){
 	r.routes[routeKey{route: route}] = h
 }
 
-func (r *Router) Dispatch(req *types.Request) *types.Response {
+func (r *Router) Dispatch(ctx context.Context, req *types.Request) *types.Response {
 	h, ok := r.routes[routeKey{route: req.Route}]
 	if !ok {
 		return &types.Response{
@@ -33,5 +35,5 @@ func (r *Router) Dispatch(req *types.Request) *types.Response {
 			Body:       []byte("route not found"),
 		}
 	}
-	return h(req)
+	return h(ctx, req)
 }

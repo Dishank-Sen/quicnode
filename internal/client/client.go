@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"log"
 	"net"
 	"strconv"
@@ -14,22 +13,32 @@ import (
 	"github.com/Dishank-Sen/quicnode/internal/transport/response"
 	"github.com/Dishank-Sen/quicnode/types"
 	"github.com/quic-go/quic-go"
+	"golang.org/x/sync/errgroup"
 )
 
 type Client struct{
 	connections map[string]*quic.Conn
 	connMu sync.Mutex
+	group *errgroup.Group
+	ctx context.Context
+	gctx context.Context
 }
 
-func NewClient() *Client{
+func NewClient(ctx context.Context) *Client{
+	g, gctx := errgroup.WithContext(ctx)
+
 	return &Client{
 		connections: make(map[string]*quic.Conn),
+		group: g,
+		ctx: ctx,
+		gctx: gctx,
 	}
 }
 
-func (c *Client) Dial(ctx context.Context, tr *quic.Transport, tlsCfg *tls.Config, quicCfg *quic.Config, req *types.Request) (*types.Response, error){
+func (c *Client) Dial(tr *quic.Transport, tlsCfg *tls.Config, quicCfg *quic.Config, req *types.Request) (*types.Response, error){
+	// Don't try to close connecetion here, it is managed by node
 	// IMPORTANT: use context with timeout for dial
-	dialCtx, dialCancel := context.WithTimeout(ctx, constants.QuicDialTimeout)
+	dialCtx, dialCancel := context.WithTimeout(c.ctx, constants.QuicDialTimeout)
 	defer dialCancel()
 
 	var conn *quic.Conn
@@ -48,6 +57,7 @@ func (c *Client) Dial(ctx context.Context, tr *quic.Transport, tlsCfg *tls.Confi
 			log.Println(err)
 			return c.errorRes(), err
 		}
+
 		c.connMu.Lock()
 		if existing, ok := c.connections[key]; ok {
 			c.connMu.Unlock()
@@ -57,13 +67,15 @@ func (c *Client) Dial(ctx context.Context, tr *quic.Transport, tlsCfg *tls.Confi
 			c.connections[key] = newConn
 			c.connMu.Unlock()
 			conn = newConn
-			go c.handleConnClose(conn, key)
 		}
+		c.group.Go(func() error{
+			return c.handleConnClose(conn, key)
+		})
 	}else{
 		conn = existingConn
 	}
-
-	streamCtx, streamCancel := context.WithTimeout(ctx, constants.QuicStreamTimeout)
+		
+	streamCtx, streamCancel := context.WithTimeout(c.ctx, constants.QuicStreamTimeout)
 	defer streamCancel()
 
 	stream, err := conn.OpenStreamSync(streamCtx)
@@ -87,32 +99,32 @@ func (c *Client) Dial(ctx context.Context, tr *quic.Transport, tlsCfg *tls.Confi
 
 }
 
-func (c *Client) DialConn(ctx context.Context, conn *quic.Conn, req *types.Request) (*types.Response, error){
-	if conn == nil{
-		return c.errorRes(), fmt.Errorf("connection object is nil")
-	}
-	streamCtx, streamCancel := context.WithTimeout(ctx, constants.QuicStreamTimeout)
-	defer streamCancel()
+// func (c *Client) DialConn(ctx context.Context, conn *quic.Conn, req *types.Request) (*types.Response, error){
+// 	if conn == nil{
+// 		return c.errorRes(), fmt.Errorf("connection object is nil")
+// 	}
+// 	streamCtx, streamCancel := context.WithTimeout(ctx, constants.QuicStreamTimeout)
+// 	defer streamCancel()
 
-	stream, err := conn.OpenStreamSync(streamCtx)
-	if err != nil {
-		return c.errorRes(), err
-	}
-	defer stream.Close()
+// 	stream, err := conn.OpenStreamSync(streamCtx)
+// 	if err != nil {
+// 		return c.errorRes(), err
+// 	}
+// 	defer stream.Close()
 
-	if err := request.WriteRequest(stream, req); err != nil {
-		log.Println("write failed:", err)
-		return c.errorRes(), err
-	}
+// 	if err := request.WriteRequest(stream, req); err != nil {
+// 		log.Println("write failed:", err)
+// 		return c.errorRes(), err
+// 	}
 
-	resp, err := response.ReadResponse(stream)
-	if err != nil {
-		log.Println("read failed:", err)
-		return c.errorRes(), err
-	}
+// 	resp, err := response.ReadResponse(stream)
+// 	if err != nil {
+// 		log.Println("read failed:", err)
+// 		return c.errorRes(), err
+// 	}
 
-	return resp, nil
-}
+// 	return resp, nil
+// }
 
 func (c *Client) errorRes() *types.Response{
 	return &types.Response{
@@ -128,16 +140,17 @@ func (c *Client) Shutdown(){
 	defer c.connMu.Unlock()
 	for i, conn := range c.connections{
 		log.Printf("connection %v closing", i)
-		_ = conn.CloseWithError(0, "node shutdown (client)")
+		_ = conn.CloseWithError(0, "client.go - node shutdown")
 	}
 }
 
-func (c *Client) handleConnClose(conn *quic.Conn, addr string){
+func (c *Client) handleConnClose(conn *quic.Conn, addr string) error{
 	<-conn.Context().Done()
-	log.Println("connection closed (client)")
+	log.Printf("client.go - connection context cancelled : %v", conn.Context().Err())
 	c.connMu.Lock()
 	delete(c.connections, addr)
 	c.connMu.Unlock()
+	return nil
 }
 
 func (c *Client) printConn(){

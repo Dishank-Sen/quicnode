@@ -22,3 +22,18 @@ type Response struct {
 	Headers    map[string]string
 	Body       []byte
 }
+
+type ConnID string
+
+type EventType int
+
+const (
+    EventConnOpened EventType = iota
+    EventConnClosed
+)
+
+type Event struct {
+    Type   EventType
+    ConnID ConnID
+    Err    error
+}

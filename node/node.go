@@ -11,11 +11,16 @@ import (
 	"github.com/Dishank-Sen/quicnode/internal/client"
 	"github.com/Dishank-Sen/quicnode/internal/router"
 	"github.com/Dishank-Sen/quicnode/types"
+	"github.com/asynkron/protoactor-go/actor"
+	"github.com/google/uuid"
 	"github.com/quic-go/quic-go"
+	"golang.org/x/sync/errgroup"
 )
 
 type Node struct{
 	cfg Config
+	group  *errgroup.Group
+    gctx   context.Context
 	ctx context.Context
 	cancel context.CancelFunc
 	listener *quic.Listener
@@ -26,30 +31,47 @@ type Node struct{
 	connsMu sync.Mutex
     conns   map[*quic.Conn]struct{}
 	client *client.Client
+	actorSystem *actor.ActorSystem
+    root        *actor.RootContext
+	poolPID *actor.PID
+	events chan types.Event
 }
 
 func NewNode(ctx context.Context, cfg Config) (*Node, error){
 	if ctx == nil{
 		return nil, fmt.Errorf("context is nil")
 	}
+
+	g, gctx := errgroup.WithContext(ctx)
 	ctx, cancel := context.WithCancel(ctx)
 	if err := checkConfig(cfg); err != nil{
 		cancel()
 		return nil, err
 	}
 	r := router.NewRouter()
+
+	system := actor.NewActorSystem()
+    root := system.Root
+	events := make(chan types.Event, 100)
+	props := actor.PropsFromProducer(func() actor.Actor {
+		return NewConnPool(events)
+	})
+	poolPID := root.Spawn(props)
+
 	n := &Node{
 		cfg: cfg,
+		group: g,
+		gctx: gctx,
 		ctx: ctx,
 		cancel: cancel,
 		router: r,
 		conns: make(map[*quic.Conn]struct{}),
-		client: client.NewClient(),
+		client: client.NewClient(ctx),
+		actorSystem: system,
+		root: root,
+		poolPID: poolPID,
+		events: events,
 	}
-	go func(ctx context.Context) {
-		<- ctx.Done()
-		n.once.Do(n.shutdown)
-	}(ctx)
 
 	return n, nil
 }
@@ -86,6 +108,11 @@ func validateListenAddr(addr string) error {
 }
 
 func (n *Node) Start() error{
+	n.group.Go(func() error {
+		<-n.ctx.Done()
+		n.once.Do(n.shutdown)
+		return fmt.Errorf("node context cancelled")
+	})
 	addr := n.cfg.ListenAddr
 	host, portstr, err := net.SplitHostPort(addr)
 	port, err := strconv.Atoi(portstr)
@@ -114,7 +141,9 @@ func (n *Node) Start() error{
 
 	n.listener = listener
 
-	go n.acceptLoop()
+	n.group.Go(func() error{
+		return n.acceptLoop()
+	})
 	return nil
 }
 
@@ -123,17 +152,15 @@ func (n *Node) Stop() error{
 	return nil
 }
 
-func (n *Node) acceptLoop(){
+func (n *Node) acceptLoop() error{
 	for{
 		log.Println("waiting for connection...")
 		conn, err := n.listener.Accept(n.ctx)
 		if err != nil{
-			log.Println(err)
-			if n.handleConnError(err){
-				log.Printf("error in listening: %v", err)
-				n.once.Do(n.shutdown)
-				return
+			if n.ctx.Err() != nil {
+				return fmt.Errorf("acceptLoop stopped: %w", err)
 			}
+			log.Println("accept error:", err)
 			continue
 		}
 
@@ -145,7 +172,7 @@ func (n *Node) acceptLoop(){
 			// handshake failed / connection died early
 			continue
 		case <-n.ctx.Done():
-			return
+			return fmt.Errorf("acceptLoop - node context cancelled")
 		}
 
 		log.Println("handshake complete")
@@ -154,7 +181,21 @@ func (n *Node) acceptLoop(){
 		n.conns[conn] = struct{}{}
 		n.connsMu.Unlock()
 
-		go n.handleSession(conn)
+		n.group.Go(func() error{
+			// should return nil as it should not affect the running node
+			// create a actor here
+			connID := uuid.New().String()
+			props := actor.PropsFromProducer(func() actor.Actor {
+				return NewConnActor(conn, types.ConnID(connID), n.poolPID)
+			})
+			pid := n.root.Spawn(props)
+			msg := &ConnOpened{
+				ConnID: types.ConnID(connID),
+				PID: pid,
+			}
+			n.root.Send(n.poolPID, msg)  // adds conn actor to connection pool
+			return n.handleSession(conn, types.ConnID(connID), pid)
+		})
 	}
 }
 
@@ -179,24 +220,24 @@ func (n *Node) Dial(addr string, route string, headers map[string]string, body [
 		Body: body,
 	}
 
-	return n.client.Dial(n.ctx, n.transport, n.cfg.TlsConfig, n.cfg.QuicConfig, req)
+	return n.client.Dial(n.transport, n.cfg.TlsConfig, n.cfg.QuicConfig, req)
 }
 
-func (n *Node) DialConn(addr string, conn *quic.Conn, route string, headers map[string]string, body []byte) (*types.Response, error){
-	desAddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil{
-		return n.errorRes(), err
-	}
+// func (n *Node) DialConn(addr string, conn *quic.Conn, route string, headers map[string]string, body []byte) (*types.Response, error){
+// 	desAddr, err := net.ResolveUDPAddr("udp", addr)
+// 	if err != nil{
+// 		return n.errorRes(), err
+// 	}
 
-	req := &types.Request{
-		Route: route,
-		DestinationAddr: desAddr,
-		Headers: headers,
-		Body: body,
-	}
+// 	req := &types.Request{
+// 		Route: route,
+// 		DestinationAddr: desAddr,
+// 		Headers: headers,
+// 		Body: body,
+// 	}
 
-	return n.client.DialConn(n.ctx, conn, req)
-}
+// 	return n.client.DialConn(n.ctx, conn, req)
+// }
 
 func (n *Node) errorRes() *types.Response{
 	return &types.Response{
@@ -211,20 +252,30 @@ func (n *Node) shutdown(){
 	// important: as listener error still keeps the udp socket open 
 	// and it may cause socket leak or port already in use issue later on.
 	n.cancel()
+	
+	n.connsMu.Lock()
+	for c := range n.conns {
+		_ = c.CloseWithError(0, "node.go - node shutdown")
+	}
+	n.connsMu.Unlock()
+
+	n.client.Shutdown()
 
 	if n.listener != nil {
         _ = n.listener.Close()
     }
 
-	n.connsMu.Lock()
-    for c := range n.conns {
-        _ = c.CloseWithError(0, "node shutdown (server)")
-    }
-    n.connsMu.Unlock()
 
 	if n.udpConn != nil {
         _ = n.udpConn.Close()
     }
 
-	n.client.Shutdown()
+}
+
+func (n *Node) Wait() error {
+    return n.group.Wait()
+}
+
+func (n *Node) Events() <-chan types.Event {
+    return n.events
 }
