@@ -2,7 +2,6 @@ package types
 
 import (
 	"net"
-
 	"github.com/quic-go/quic-go"
 )
 
