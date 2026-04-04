@@ -21,7 +21,7 @@ func (n *Node) dial(tr *quic.Transport, tlsCfg *tls.Config, quicCfg *quic.Config
 
 	var conn *quic.Conn
 	retrievedConn, ok := n.connManager.getConn(req.DestinationAddr.String())
-	if !ok{
+	if ok{
 		conn = retrievedConn
 	}else{
 		newConn, err := tr.Dial(
