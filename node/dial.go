@@ -43,7 +43,7 @@ func (n *Node) dial(tr *quic.Transport, tlsCfg *tls.Config, quicCfg *quic.Config
 		}
 		n.connManager.newConn(cm)
 		n.group.Go(func() error{
-			return n.handleConnClose(conn, connID)
+			return n.handleSession(conn, connID)
 		})
 	}
 		
@@ -71,12 +71,12 @@ func (n *Node) dial(tr *quic.Transport, tlsCfg *tls.Config, quicCfg *quic.Config
 
 }
 
-func (n *Node) handleConnClose(conn *quic.Conn, connID types.ConnID) error{
-	<-conn.Context().Done()
-	log.Printf("dial.go - connection context cancelled : %v", conn.Context().Err())
-	n.connManager.removeEntry(connID)
-	return nil
-}
+// func (n *Node) handleConnClose(conn *quic.Conn, connID types.ConnID) error{
+// 	<-conn.Context().Done()
+// 	log.Printf("dial.go - connection context cancelled : %v", conn.Context().Err())
+// 	n.connManager.removeEntry(connID)
+// 	return nil
+// }
 
 func errorRes() *types.Response{
 	return &types.Response{
