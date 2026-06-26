@@ -17,13 +17,28 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// re-export so users only need to import node package
+// StreamContext provides access to an incoming stream request.
+// Available in StreamHandlerFunc callbacks registered via HandleStream.
 type StreamContext = stream.Context
+
+// DatagramContext provides access to an incoming datagram.
+// Available in DatagramHandlerFunc callbacks registered via HandleDatagram.
 type DatagramContext = datagram.Context
+
+// StreamHandlerFunc is called when a stream request arrives on a registered route.
+// The handler can read from ctx.Payload() and write responses via ctx.Write().
 type StreamHandlerFunc = stream.HandlerFunc
+
+// DatagramHandlerFunc is called when a datagram arrives on a registered route.
+// The handler can read from ctx.Payload(). Datagrams are one-way (no response).
 type DatagramHandlerFunc = datagram.HandlerFunc
+
+// Peer represents a connection to a remote node.
+// Obtained via OpenConn. Use Send() for reliable streams or SendDatagram() for unreliable messages.
 type Peer = connection.Peer
 
+// Node is a QUIC-based network node that can both accept connections and dial out to peers.
+// A node listens on a local address and maintains a connection pool to remote peers.
 type Node struct{
 	cfg Config
 	group  *errgroup.Group
@@ -39,7 +54,17 @@ type Node struct{
 	connections *connection.Connections
 }
 
-// NewNode returns a new node
+// NewNode creates a new QUIC node with the given configuration.
+// The provided context controls the lifetime of the node - when cancelled, the node shuts down.
+// Config must include a valid ListenAddr, TlsConfig, and QuicConfig.
+// Returns error if configuration validation fails.
+//
+// Example:
+//   node, err := NewNode(ctx, Config{
+//       ListenAddr: "127.0.0.1:4242",
+//       TlsConfig:  tlsCfg,
+//       QuicConfig: &quic.Config{},
+//   })
 func NewNode(ctx context.Context, cfg Config) (*Node, error){
 	if ctx == nil{
 		return nil, fmt.Errorf("context is nil")
@@ -100,7 +125,10 @@ func validateListenAddr(addr string) error {
 	return nil
 }
 
-/* non blocking */
+// Start begins listening for incoming QUIC connections on the configured address.
+// This method is non-blocking - it spawns goroutines for the accept loop and returns immediately.
+// Returns error if the listener cannot be created (e.g., port already in use).
+// The node will continue running until Stop() is called or the context is cancelled.
 func (n *Node) Start() error{
 	n.group.Go(func() error {
 		<-n.ctx.Done()
@@ -141,6 +169,10 @@ func (n *Node) Start() error{
 	return nil
 }
 
+// Stop gracefully shuts down the node.
+// Closes the listener, cancels the node context, and closes all active peer connections.
+// Safe to call multiple times - only the first call takes effect.
+// Returns nil (error exists for interface compatibility).
 func (n *Node) Stop() error{
 	n.once.Do(n.shutdown)
 	return nil
@@ -174,19 +206,52 @@ func (n *Node) acceptLoop() error{
 	}
 }
 
-// HandleStream registers a handler for stream-based requests
-// Streams are reliable, ordered, and support request-response patterns
+// HandleStream registers a handler function for the given route.
+// When a remote peer sends a stream request to this route, the handler is called.
+// Streams are reliable and ordered - use for request-response patterns.
+// The handler receives a StreamContext which provides access to the request payload
+// and a Write() method for sending responses back to the requester.
+//
+// Example:
+//   node.HandleStream("echo", func(ctx node.StreamContext) {
+//       ctx.Write([]byte("echo: " + string(ctx.Payload())))
+//   })
 func (n *Node) HandleStream(route string, h stream.HandlerFunc){
 	n.router.StreamRoute(route, h)
 }
 
-// HandleDatagram registers a handler for datagram-based requests
-// Datagrams are unreliable, unordered, and fire-and-forget
-// Use for real-time data where loss is acceptable (game updates, telemetry, etc.)
+// HandleDatagram registers a handler function for the given route.
+// When a remote peer sends a datagram to this route, the handler is called.
+// Datagrams are unreliable and may be lost or arrive out of order.
+// Use for real-time data where loss is acceptable (game position updates, telemetry).
+// The handler receives a DatagramContext which provides read-only access to the payload.
+// Datagrams are one-way - there is no response mechanism.
+//
+// Requires EnableDatagrams: true in QuicConfig.
+//
+// Example:
+//   node.HandleDatagram("telemetry", func(ctx node.DatagramContext) {
+//       metrics := parseMetrics(ctx.Payload())
+//       recordMetrics(metrics)
+//   })
 func (n *Node) HandleDatagram(route string, h datagram.HandlerFunc){
 	n.router.DatagramRoute(route, h)
 }
 
+// OpenConn opens a connection to the remote address and returns a Peer handle.
+// If a connection to this address already exists, it is reused and the existing Peer is returned.
+// The returned Peer can be used to send stream requests via Send() or datagrams via SendDatagram().
+// The connection remains open until explicitly closed via Peer.Close() or node shutdown.
+//
+// The addr must be in "host:port" format (e.g., "127.0.0.1:4242" or "example.com:443").
+// Context can be used to timeout the connection attempt.
+//
+// Example:
+//   peer, err := node.OpenConn(ctx, "127.0.0.1:4242")
+//   if err != nil {
+//       return err
+//   }
+//   respCh, _ := peer.Send("echo", []byte("hello"))
 func (n *Node) OpenConn(ctx context.Context, addr string) (*connection.Peer, error){
 	desAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil{
@@ -214,10 +279,33 @@ func (n *Node) shutdown(){
     }
 }
 
+// Wait blocks until the node's context is cancelled or an error occurs in a background goroutine.
+// Typically called after Start() to keep the main goroutine alive.
+// Returns the first error encountered by any managed goroutine, or context cancellation error.
+//
+// Example:
+//   node.Start()
+//   if err := node.Wait(); err != nil {
+//       log.Printf("Node stopped: %v", err)
+//   }
 func (n *Node) Wait() error {
     return n.group.Wait()
 }
 
+// Events returns a receive-only channel of connection lifecycle events.
+// Events are sent when connections are opened (EventConnOpened) or closed (EventConnClosed).
+// The channel is buffered with capacity 100 - if not consumed, events may be dropped.
+// Useful for monitoring connection state or implementing custom connection management logic.
+//
+// Example:
+//   for event := range node.Events() {
+//       switch event.Type {
+//       case types.EventConnOpened:
+//           log.Printf("Connection opened: %s", event.ConnID)
+//       case types.EventConnClosed:
+//           log.Printf("Connection closed: %s (err: %v)", event.ConnID, event.Err)
+//       }
+//   }
 func (n *Node) Events() <-chan types.Event {
     return n.events
 }
