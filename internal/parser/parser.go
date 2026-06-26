@@ -1,82 +1,109 @@
 package parser
 
 import (
-	"bufio"
-	"errors"
+	"bytes"
+	"encoding/binary"
+	"fmt"
 	"io"
-	"strconv"
-	"strings"
 
 	"github.com/Dishank-Sen/quicnode/types"
 )
 
 func ParseRequest(stream io.Reader) (*types.Request, error) {
-	r := bufio.NewReader(stream)
-	rawHeaders, err := ReadUntilDelimiter(r, []byte("\r\n\r\n"))
-	if err != nil {
+	var routeLenBuf [2]byte
+	if _, err := io.ReadFull(stream, routeLenBuf[:]); err != nil{
+		return nil, err
+	}
+	routeLen := binary.BigEndian.Uint16(routeLenBuf[:])
+
+	routeBuf := make([]byte, routeLen)
+	if _, err := io.ReadFull(stream, routeBuf[:]); err != nil{
 		return nil, err
 	}
 
-	lines := strings.Split(string(rawHeaders), "\r\n")
-	parts := strings.Split(lines[0], " ")
-	if len(parts) < 2 {
-		return nil, errors.New("invalid request line")
-	}
+	route := string(routeBuf)
 
-	req := &types.Request{
-		Route: parts[0],
-		Headers: make(map[string]string),
-		Protocol: parts[1],
-	}
+    var payloadLenBuf [4]byte
+    if _, err := io.ReadFull(stream, payloadLenBuf[:]); err != nil {
+        return nil, err
+    }
+    payloadLen := binary.BigEndian.Uint32(payloadLenBuf[:])
 
-	for _, line := range lines[1:] {
-		if line == "" {
-			break
-		}
-		kv := strings.SplitN(line, ":", 2)
-		if len(kv) == 2 {
-			req.Headers[strings.TrimSpace(kv[0])] =
-				strings.TrimSpace(kv[1])
-		}
+    payload := make([]byte, payloadLen)
+    if _, err := io.ReadFull(stream, payload); err != nil{
+		return nil, err
 	}
-
-	// Body only if Content-Length exists
-	if cl, ok := req.Headers["Content-Length"]; ok {
-		n, err := strconv.Atoi(cl)
-		if err != nil {
-			return nil, err
-		}
-		req.Body = make([]byte, n)
-		if _, err := io.ReadFull(r, req.Body); err != nil {
-			return nil, err
-		}
-	}
-
-	return req, nil
+	
+	return &types.Request{Route: route, Payload: payload}, nil
 }
 
-func ReadUntilDelimiter(r *bufio.Reader, delim []byte) ([]byte, error) {
-	var buf []byte
-	match := 0
+func SerializeRequest(route string, payload []byte) ([]byte, error) {
+    buf := new(bytes.Buffer)
 
-	for {
-		b, err := r.ReadByte()
-		if err != nil {
-			return nil, err
-		}
+    if err := binary.Write(buf, binary.BigEndian, uint16(len(route))); err != nil {
+        return nil, err
+    }
+    buf.WriteString(route)
 
-		buf = append(buf, b)
+    if err := binary.Write(buf, binary.BigEndian, uint32(len(payload))); err != nil {
+        return nil, err
+    }
+    buf.Write(payload)
 
-		switch b {
-		case delim[match]:
-			match++
-			if match == len(delim) {
-				return buf, nil
-			}
-		case delim[0]:
-			match = 1
-		default:
-			match = 0
-		}
-	}
+    return buf.Bytes(), nil
+}
+
+func SerializeResponse(payload []byte) ([]byte, error) {
+    buf := new(bytes.Buffer)
+    if err := binary.Write(buf, binary.BigEndian, uint32(len(payload))); err != nil {
+        return nil, err
+    }
+    buf.Write(payload)
+    return buf.Bytes(), nil
+}
+
+func ParseResponse(stream io.Reader) ([]byte, error) {
+    var lenBuf [4]byte
+    if _, err := io.ReadFull(stream, lenBuf[:]); err != nil {
+        return nil, err
+    }
+    payloadLen := binary.BigEndian.Uint32(lenBuf[:])
+
+    payload := make([]byte, payloadLen) // exact allocation
+    if _, err := io.ReadFull(stream, payload); err != nil {
+        return nil, err
+    }
+    return payload, nil
+}
+
+func SerializeDatagramFrame(route string, payload []byte) ([]byte, error) {
+    if len(route) > 255 {
+        return nil, fmt.Errorf("route too long for datagram")
+    }
+    buf := new(bytes.Buffer)
+    buf.WriteByte(byte(len(route)))
+    buf.WriteString(route)
+    buf.Write(payload)
+    return buf.Bytes(), nil
+}
+
+func ParseDatagramFrame(data []byte) (*types.Request, error) {
+    if len(data) < 1 {
+        return nil, fmt.Errorf("datagram too short")
+    }
+
+    routeLen := int(data[0])
+    data = data[1:]
+
+    if len(data) < routeLen {
+        return nil, fmt.Errorf("datagram truncated: expected %d route bytes, got %d", routeLen, len(data))
+    }
+
+    route := string(data[:routeLen])
+    payload := data[routeLen:]
+
+    return &types.Request{
+        Route: route,
+        Payload: payload,
+    }, nil
 }

@@ -1,39 +1,62 @@
 package router
 
 import (
-	"context"
+	"strings"
+	"sync"
 
-	"github.com/Dishank-Sen/quicnode/types"
+	"github.com/Dishank-Sen/quicnode/internal/datagram"
+	"github.com/Dishank-Sen/quicnode/internal/stream"
 )
 
-type HandlerFunc func(ctx context.Context, req *types.Request) *types.Response
-
-type routeKey struct {
-	route string
-}
-
 type Router struct{
-	routes map[routeKey]HandlerFunc
+	streamRoutes map[string]stream.HandlerFunc
+	datagramRoutes map[string]datagram.HandlerFunc
+	mu sync.RWMutex
 }
 
 func NewRouter() *Router {
 	return &Router{
-		routes: make(map[routeKey]HandlerFunc),
+		streamRoutes: make(map[string]stream.HandlerFunc),
+		datagramRoutes: make(map[string]datagram.HandlerFunc),
 	}
 }
 
-func (r *Router) AddRoute(route string, h HandlerFunc){
-	r.routes[routeKey{route: route}] = h
+func (r *Router) StreamRoute(route string, h stream.HandlerFunc) {
+	route = strings.TrimSpace(route)
+    if h == nil {
+        panic("quicnode: nil handler registered for stream route: " + route)
+    }
+	if len(route) == 0 {
+		panic("quicnode: empty route")
+	}
+    r.mu.Lock()
+    defer r.mu.Unlock()
+    r.streamRoutes[route] = h
 }
 
-func (r *Router) Dispatch(ctx context.Context, req *types.Request) *types.Response {
-	h, ok := r.routes[routeKey{route: req.Route}]
-	if !ok {
-		return &types.Response{
-			StatusCode: 404,
-			Message:    "Not Found",
-			Body:       []byte("route not found"),
-		}
+func (r *Router) DatagramRoute(route string, h datagram.HandlerFunc) {
+	route = strings.TrimSpace(route)
+	if h == nil {
+		panic("quicnode: nil handler registered for datagram route: " + route)
 	}
-	return h(ctx, req)
+	if len(route) == 0 {
+		panic("quicnode: empty route")
+	}
+	r.mu.Lock()
+    defer r.mu.Unlock()
+    r.datagramRoutes[route] = h
+}
+
+func (r *Router) GetStreamHandler(route string) (stream.HandlerFunc, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+    h, ok := r.streamRoutes[route]
+    return h, ok
+}
+
+func (r *Router) GetDatagramHandler(route string) (datagram.HandlerFunc, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+    h, ok := r.datagramRoutes[route]
+    return h, ok
 }

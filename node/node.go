@@ -7,12 +7,22 @@ import (
 	"net"
 	"strconv"
 	"sync"
+
+	"github.com/Dishank-Sen/quicnode/internal/connection"
+	"github.com/Dishank-Sen/quicnode/internal/datagram"
 	"github.com/Dishank-Sen/quicnode/internal/router"
+	"github.com/Dishank-Sen/quicnode/internal/stream"
 	"github.com/Dishank-Sen/quicnode/types"
-	"github.com/google/uuid"
 	"github.com/quic-go/quic-go"
 	"golang.org/x/sync/errgroup"
 )
+
+// re-export so users only need to import node package
+type StreamContext = stream.Context
+type DatagramContext = datagram.Context
+type StreamHandlerFunc = stream.HandlerFunc
+type DatagramHandlerFunc = datagram.HandlerFunc
+type Peer = connection.Peer
 
 type Node struct{
 	cfg Config
@@ -26,9 +36,10 @@ type Node struct{
 	udpConn *net.UDPConn
 	once sync.Once
 	events chan types.Event
-	connManager *ConnManager
+	connections *connection.Connections
 }
 
+// NewNode returns a new node
 func NewNode(ctx context.Context, cfg Config) (*Node, error){
 	if ctx == nil{
 		return nil, fmt.Errorf("context is nil")
@@ -52,7 +63,7 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error){
 		cancel: cancel,
 		router: r,
 		events: events,
-		connManager: newConnManage(events),
+		connections: connection.NewConnections(events, r),
 	}
 
 	return n, nil
@@ -89,6 +100,7 @@ func validateListenAddr(addr string) error {
 	return nil
 }
 
+/* non blocking */
 func (n *Node) Start() error{
 	n.group.Go(func() error {
 		<-n.ctx.Done()
@@ -158,51 +170,30 @@ func (n *Node) acceptLoop() error{
 		}
 
 		log.Println("handshake complete")
-
-		n.group.Go(func() error{
-			// should return nil as it should not affect the running node
-			connID := uuid.New().String()
-			cm := &ConnMeta{
-				ConnID: types.ConnID(connID),
-				Conn: conn,
-				Addr: conn.RemoteAddr().String(),
-			}
-			n.connManager.newConn(cm)
-			return n.handleSession(conn, types.ConnID(connID))
-		})
+		n.connections.CreateConn(conn)
 	}
 }
 
-func (n *Node) Handle(route string, h router.HandlerFunc){
-	n.router.AddRoute(route, h)
+// HandleStream registers a handler for stream-based requests
+// Streams are reliable, ordered, and support request-response patterns
+func (n *Node) HandleStream(route string, h stream.HandlerFunc){
+	n.router.StreamRoute(route, h)
 }
 
-func (n *Node) Dial(addr string, route string, headers map[string]string, body []byte) (*types.Response, error){
-	if err := validateListenAddr(addr); err != nil{
-		return nil,err
-	}
+// HandleDatagram registers a handler for datagram-based requests
+// Datagrams are unreliable, unordered, and fire-and-forget
+// Use for real-time data where loss is acceptable (game updates, telemetry, etc.)
+func (n *Node) HandleDatagram(route string, h datagram.HandlerFunc){
+	n.router.DatagramRoute(route, h)
+}
 
+func (n *Node) OpenConn(ctx context.Context, addr string) (*connection.Peer, error){
 	desAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil{
-		return n.errorRes(), err
+		return nil, err
 	}
 
-	req := &types.Request{
-		Route: route,
-		DestinationAddr: desAddr,
-		Headers: headers,
-		Body: body,
-	}
-
-	return n.dial(n.transport, n.cfg.TlsConfig, n.cfg.QuicConfig, req)
-}
-
-func (n *Node) errorRes() *types.Response{
-	return &types.Response{
-		StatusCode: 500,
-		Message:    "Error",
-		Body:       []byte("Internal Server Error"),
-	}
+	return n.connections.OpenConn(ctx, n.transport, n.cfg.TlsConfig, n.cfg.QuicConfig, desAddr)
 }
 
 func (n *Node) shutdown(){
@@ -211,19 +202,16 @@ func (n *Node) shutdown(){
 	// and it may cause socket leak or port already in use issue later on.
 	n.cancel()
 	
-	for _, c := range n.connManager.getAllConn() {
-		_ = c.CloseWithError(0, "node.go - node shutdown")
-	}
+	// close all connections
+	n.connections.CloseAll()
 
 	if n.listener != nil {
         _ = n.listener.Close()
     }
 
-
 	if n.udpConn != nil {
         _ = n.udpConn.Close()
     }
-
 }
 
 func (n *Node) Wait() error {
