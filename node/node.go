@@ -8,11 +8,13 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/Dishank-Sen/quicnode/internal/auth"
 	"github.com/Dishank-Sen/quicnode/internal/connection"
 	"github.com/Dishank-Sen/quicnode/internal/datagram"
 	"github.com/Dishank-Sen/quicnode/internal/router"
 	"github.com/Dishank-Sen/quicnode/internal/stream"
 	"github.com/Dishank-Sen/quicnode/types"
+	"github.com/flynn/noise"
 	"github.com/quic-go/quic-go"
 	"golang.org/x/sync/errgroup"
 )
@@ -52,6 +54,9 @@ type Node struct{
 	once sync.Once
 	events chan types.Event
 	connections *connection.Connections
+
+	// Authentication (only initialized if RequireAuth is true)
+	localKeypair noise.DHKey
 }
 
 // NewNode creates a new QUIC node with the given configuration.
@@ -79,7 +84,18 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error){
 	r := router.NewRouter()
 
 	events := make(chan types.Event, 100)
-	
+
+	// Always load or generate keypair (needed for TLS certificate)
+	keypair, err := auth.LoadOrGenerateKeypair()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to load keypair: %w", err)
+	}
+
+	if cfg.RequireAuth {
+		log.Printf("Noise authentication enabled (public key: %x...)", keypair.Public[:8])
+	}
+
 	n := &Node{
 		cfg: cfg,
 		group: g,
@@ -88,7 +104,8 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error){
 		cancel: cancel,
 		router: r,
 		events: events,
-		connections: connection.NewConnections(events, r),
+		connections: connection.NewConnections(events, r, cfg.RequireAuth, keypair),
+		localKeypair: keypair,
 	}
 
 	return n, nil
@@ -97,10 +114,6 @@ func NewNode(ctx context.Context, cfg Config) (*Node, error){
 func checkConfig(cfg Config) error{
 	if err := validateListenAddr(cfg.ListenAddr); err != nil{
 		return err
-	}
-
-	if cfg.TlsConfig == nil{
-		return fmt.Errorf("tls config is required")
 	}
 
 	if cfg.QuicConfig == nil{
@@ -141,7 +154,13 @@ func (n *Node) Start() error{
 	if err != nil{
 		return err
 	}
-	tlsCfg := n.cfg.TlsConfig
+
+	// Generate TLS config from the node's keypair
+	tlsCfg, err := auth.GetTLSConfig(n.localKeypair)
+	if err != nil {
+		return fmt.Errorf("failed to generate TLS config: %w", err)
+	}
+
 	quicCfg := n.cfg.QuicConfig
 
 	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{
@@ -258,7 +277,13 @@ func (n *Node) OpenConn(ctx context.Context, addr string) (*connection.Peer, err
 		return nil, err
 	}
 
-	return n.connections.OpenConn(ctx, n.transport, n.cfg.TlsConfig, n.cfg.QuicConfig, desAddr)
+	// Generate TLS config from the node's keypair
+	tlsCfg, err := auth.GetTLSConfig(n.localKeypair)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate TLS config: %w", err)
+	}
+
+	return n.connections.OpenConn(ctx, n.transport, tlsCfg, n.cfg.QuicConfig, desAddr)
 }
 
 func (n *Node) shutdown(){

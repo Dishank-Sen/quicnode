@@ -1,15 +1,26 @@
 package connection
 
 import (
+	"sync"
+
 	"github.com/Dishank-Sen/quicnode/internal/parser"
 	"github.com/Dishank-Sen/quicnode/types"
 	"github.com/quic-go/quic-go"
 )
 
+// Peer represents a connection to a remote node.
+// After authentication (if enabled), PublicKey and PeerID are populated.
 type Peer struct {
     conn *quic.Conn
     Addr string
     ID   types.ConnID
+
+    // Authentication state (only set when RequireAuth is enabled)
+    PublicKey       []byte // Remote peer's Noise static public key (32 bytes)
+    PeerID          string // base58(sha256(PublicKey)) - stable peer identifier
+    IsAuthenticated bool   // true after successful Noise handshake
+
+    authMu sync.RWMutex
 }
 
 func newPeer(conn *quic.Conn, addr string, id types.ConnID) *Peer {
@@ -84,6 +95,24 @@ func (p *Peer) SendDatagram(route string, payload []byte) error {
 	// SendDatagram returns error if the datagram queue is full
 	// It does NOT guarantee delivery - datagrams can be lost
 	return p.conn.SendDatagram(frame)
+}
+
+// SetAuthenticated marks the peer as authenticated after a successful Noise handshake.
+// This is called internally by the connection manager after auth completes.
+func (p *Peer) SetAuthenticated(publicKey []byte, peerID string) {
+	p.authMu.Lock()
+	defer p.authMu.Unlock()
+	p.PublicKey = publicKey
+	p.PeerID = peerID
+	p.IsAuthenticated = true
+}
+
+// GetAuthInfo returns the peer's authentication information.
+// Returns empty values if authentication is not enabled or hasn't completed.
+func (p *Peer) GetAuthInfo() (publicKey []byte, peerID string, authenticated bool) {
+	p.authMu.RLock()
+	defer p.authMu.RUnlock()
+	return p.PublicKey, p.PeerID, p.IsAuthenticated
 }
 
 func (p *Peer) Close(){

@@ -51,10 +51,8 @@ package main
 
 import (
     "context"
-    "crypto/tls"
     "fmt"
     "log"
-    "time"
 
     "github.com/Dishank-Sen/quicnode/node"
     "github.com/quic-go/quic-go"
@@ -62,12 +60,11 @@ import (
 
 func main() {
     ctx := context.Background()
-    tlsCfg := &tls.Config{ /* your TLS config */ }
 
     // Node A - listens and handles requests
+    // TLS certificates automatically derived from node's keypair
     nodeA, _ := node.NewNode(ctx, node.Config{
         ListenAddr: "127.0.0.1:4242",
-        TlsConfig:  tlsCfg,
         QuicConfig: &quic.Config{},
     })
     nodeA.Start()
@@ -80,7 +77,6 @@ func main() {
     // Node B - connects and sends request
     nodeB, _ := node.NewNode(ctx, node.Config{
         ListenAddr: "127.0.0.1:4243",
-        TlsConfig:  tlsCfg,
         QuicConfig: &quic.Config{},
     })
     nodeB.Start()
