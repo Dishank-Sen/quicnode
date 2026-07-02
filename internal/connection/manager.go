@@ -46,14 +46,23 @@ func (c *ConnManager) newConn(conn *quic.Conn, addr string) *Peer {
         Peer:   peer,
     }
 
+    // Check if there's an existing connection from this address
     existing, ok := c.byAddr[addr]
     if ok {
-        if shouldReplace(existing, cm) {
-            existing.Conn.CloseWithError(0, "duplicate connection")
+        // Check if existing connection is still alive
+        select {
+        case <-existing.Conn.Context().Done():
+            // Existing connection is dead, remove it
+            log.Printf("Replacing dead connection from %s", addr)
             delete(c.byID, existing.ConnID)
-        } else {
-            cm.Conn.CloseWithError(0, "duplicate connection")
-            return existing.Peer  // return existing peer, not new one
+            delete(c.byAddr, addr)
+        default:
+            // Existing connection is alive
+            // Close the OLD connection and use the NEW one
+            log.Printf("Duplicate connection from %s - closing old connection", addr)
+            existing.Conn.CloseWithError(0, "replaced by new connection")
+            delete(c.byID, existing.ConnID)
+            // Will be replaced below with new connection
         }
     }
 
@@ -92,10 +101,6 @@ func (c *ConnManager) getAllPeers() []*Peer {
         peers = append(peers, v.Peer)
     }
     return peers
-}
-
-func shouldReplace(old, new *ConnMeta) bool {
-	return new.ConnID < old.ConnID
 }
 
 func (c *ConnManager) removeEntry(connID types.ConnID){
