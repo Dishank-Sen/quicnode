@@ -293,6 +293,7 @@ Datagram handlers have no `Write` — datagrams are one-way.
 type Config struct {
 	ListenAddr  string       // host:port to bind, e.g. "127.0.0.1:4242" or ":4242"
 	QuicConfig  *quic.Config // REQUIRED QUIC transport settings
+	TlsConfig   *tls.Config  // OPTIONAL custom TLS; nil = auto-derived self-signed cert
 	RequireAuth bool         // enable Noise XX + TOFU authentication (default false)
 }
 ```
@@ -307,6 +308,7 @@ Validation (`NewNode` returns an error for any of these): `ListenAddr` must be v
 | ----- | ---- | ------- | ----------- |
 | `ListenAddr` | `string` | none (required, validated) | Local UDP address to bind (`host:port`). `:4242` binds all interfaces. |
 | `QuicConfig` | `*quic.Config` | none (required) | QUIC transport configuration passed to `quic-go`. Set `EnableDatagrams: true` to use datagrams. |
+| `TlsConfig` | `*tls.Config` | `nil` (auto-derived) | **Optional** custom TLS configuration. Used by `Start()` and `OpenConn()`. When `nil`, a self-signed certificate is derived from the node's keypair and TLS verification is skipped. |
 | `RequireAuth` | `bool` | `false` | When true, require a Noise XX handshake and TOFU key verification on every connection, and expose peer identity to handlers. |
 
 ### Environment / on-disk state
@@ -390,7 +392,7 @@ The `node` package is the only intended public entry point; `connection`, `route
 - **Authentication is opt-in and must be symmetric.** If only one side sets `RequireAuth`, connections will fail or be unauthenticated. Without it, there is no peer identity verification (though transport is TLS-encrypted).
 - **TOFU has no out-of-band bootstrap.** The first connection to a peer is trusted implicitly — a MITM on first contact would be pinned. Revoke a peer by deleting its file from `known_peers/`. Key rotation is not supported.
 - **No public key-management API.** `GetKnownPeers` / `RemoveKnownPeer` live in `internal/auth` and are **not importable** by external modules. To review or revoke trust you must touch the `known_peers/` directory on disk directly.
-- **No user-controlled TLS.** TLS is fully auto-managed with self-signed certs and `InsecureSkipVerify`; peer identity is provided by Noise XX only when auth is enabled.
+- **TLS identity comes from Noise XX, not certificates.** By default quicnode uses auto-managed self-signed certs with `InsecureSkipVerify`; peer identity is provided by Noise XX only when auth is enabled. You can supply your own `TlsConfig`, but if you do, keep the verification semantics of your peers in mind.
 - **Multiple simultaneous connections from one address** cannot coexist — the pool deduplicates by remote address, closing the older connection.
 - **Events can be dropped** if you do not drain the `Events()` channel (buffer size 100).
 - **Route length caps:** stream routes and payloads are length-prefixed with 16-bit / 32-bit integers respectively; datagram routes are capped at 255 bytes (a longer route returns an error from `SendDatagram`).

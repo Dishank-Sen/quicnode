@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
 	"net"
@@ -138,6 +139,17 @@ func validateListenAddr(addr string) error {
 	return nil
 }
 
+// getTLSConfig returns the effective TLS configuration for this node.
+// It prefers a user-provided TlsConfig from Config; otherwise it derives a
+// self-signed certificate from the node's keypair. The returning tls.Config
+// is never nil once Start or OpenConn has run.
+func (n *Node) getTLSConfig() (*tls.Config, error) {
+	if n.cfg.TlsConfig != nil {
+		return n.cfg.TlsConfig, nil
+	}
+	return auth.GetTLSConfig(n.localKeypair)
+}
+
 // Start begins listening for incoming QUIC connections on the configured address.
 // This method is non-blocking - it spawns goroutines for the accept loop and returns immediately.
 // Returns error if the listener cannot be created (e.g., port already in use).
@@ -155,8 +167,7 @@ func (n *Node) Start() error{
 		return err
 	}
 
-	// Generate TLS config from the node's keypair
-	tlsCfg, err := auth.GetTLSConfig(n.localKeypair)
+	tlsCfg, err := n.getTLSConfig()
 	if err != nil {
 		return fmt.Errorf("failed to generate TLS config: %w", err)
 	}
@@ -277,8 +288,7 @@ func (n *Node) OpenConn(ctx context.Context, addr string) (*connection.Peer, err
 		return nil, err
 	}
 
-	// Generate TLS config from the node's keypair
-	tlsCfg, err := auth.GetTLSConfig(n.localKeypair)
+	tlsCfg, err := n.getTLSConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate TLS config: %w", err)
 	}

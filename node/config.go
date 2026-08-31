@@ -1,6 +1,8 @@
 package node
 
 import (
+	"crypto/tls"
+
 	"github.com/quic-go/quic-go"
 )
 
@@ -11,6 +13,13 @@ type Config struct {
 
 	// QuicConfig provides QUIC transport settings (required).
 	QuicConfig *quic.Config
+
+	// TlsConfig provides an optional custom TLS configuration used for both
+	// the listener (Start) and dialing (OpenConn). When nil (the default),
+	// a TLS configuration is derived automatically from the node's keypair
+	// (a self-signed certificate with InsecureSkipVerify). Provide this only
+	// if you need custom certificates or verification behavior.
+	TlsConfig *tls.Config
 
 	// RequireAuth enables Noise XX authentication for all connections.
 	// When true, peers must complete a Noise handshake before any application streams are accepted.
